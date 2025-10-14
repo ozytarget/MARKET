@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Panel de Control de Opciones</title>
+    <style>
+        body { background-color: #121212; color: #e0e0e0; font-family: sans-serif; text-align: center; }
+        .stage { padding: 30px; border-bottom: 1px solid #333; }
+        h1, h2, h3 { color: #bb86fc; }
+        input, select, button { padding: 10px; font-size: 16px; margin: 10px; background-color: #3c3c3c; border: 1px solid #bb86fc; color: #e0e0e0; border-radius: 5px; }
+        button { background-color: #bb86fc; color: #121212; cursor: pointer; font-weight: bold; }
+        .hidden { display: none; }
+        .dashboard { display: flex; justify-content: center; gap: 30px; margin-top: 20px; flex-wrap: wrap; }
+        .metric-box { border: 2px solid; padding: 20px; border-radius: 10px; width: 300px; background-color: #1e1e1e; }
+        .metric-box h2 { margin-top: 0; font-size: 24px; font-weight: normal; }
+        .metric-box .value { font-size: 48px; font-weight: bold; transition: color 0.5s ease; }
+        .price { border-color: #03dac6; color: #03dac6; }
+        .gamma-flip { border-color: #cf6679; color: #cf6679; }
+        .max-pain { border-color: #fdd835; color: #fdd835; }
+        .price-pulse { color: white !important; }
+        .content-container { display: flex; justify-content: center; align-items: flex-start; gap: 40px; margin-top: 40px; flex-wrap: wrap; }
+        .data-section, .ideas-section, .mm-section { background-color: #1e1e1e; padding: 20px; border-radius: 8px; border: 1px solid #333; flex: 1; min-width: 400px; text-align: left; }
+        .results-table { border-collapse: collapse; margin-top: 10px; width: 100%; }
+        .results-table th, .results-table td { border: 1px solid #444; padding: 8px; }
+        .idea-card { border-left: 5px solid; margin-bottom: 15px; padding: 15px; border-radius: 5px; }
+        .idea-card.BULLISH { border-color: #03dac6; background-color: rgba(3, 218, 198, 0.1); }
+        .idea-card.BEARISH { border-color: #cf6679; background-color: rgba(207, 102, 121, 0.1); }
+        .idea-card.NEUTRO { border-color: #fdd835; background-color: rgba(253, 216, 53, 0.1); }
+        .idea-card h3 { margin-top: 0; }
+        .loader { border: 5px solid #f3f3f3; border-top: 5px solid #bb86fc; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin: 20px auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .mm-prediction { font-size: 2em; font-weight: bold; margin-bottom: 10px; }
+        .mm-prediction.BAJISTA { color: #cf6679; }
+        .mm-prediction.ALCISTA { color: #03dac6; }
+        .mm-prediction.NEUTRO { color: #fdd835; }
+    </style>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+</head>
+<body>
+
+    <div id="stage-1" class="stage">
+        <h1>Paso 1: Selecciona un Ticker</h1>
+        <input list="tickers-list" id="ticker-input" name="ticker" type="text" autocomplete="off" placeholder="Escribe o selecciona un Ticker">
+        <datalist id="tickers-list">
+            {% for ticker in tickers %}
+                <option value="{{ ticker }}">
+            {% endfor %}
+        </datalist>
+        <button id="fetch-expirations-btn">Buscar Expiraciones</button>
+    </div>
+
+    <div id="stage-2" class="stage hidden">
+        <h1>Paso 2: Selecciona una Expiración para <span id="selected-ticker-span"></span></h1>
+        <select id="expiration-select"></select>
+        <button id="analyze-btn">Analizar</button>
+        <div id="loader-2" class="loader hidden"></div>
+    </div>
+
+    <div id="stage-3" class="stage hidden"></div>
+
+    <script type="text/javascript">
+        // ¡LA CORRECCIÓN CLAVE! Esperamos a que toda la página esté cargada
+        document.addEventListener('DOMContentLoaded', function() {
+            
+            const socket = io();
+            socket.on('connect', () => console.log('Socket.IO Conectado.'));
+            
+            const stage1 = document.getElementById('stage-1');
+            const stage2 = document.getElementById('stage-2');
+            const stage3 = document.getElementById('stage-3');
+            const loader2 = document.getElementById('loader-2');
+            const tickerInput = document.getElementById('ticker-input');
+            const expirationSelect = document.getElementById('expiration-select');
+            const selectedTickerSpan = document.getElementById('selected-ticker-span');
+            
+            let selectedTicker = '';
+
+            // --- Lógica para el PASO 1 -> PASO 2 ---
+            document.getElementById('fetch-expirations-btn').addEventListener('click', async () => {
+                selectedTicker = tickerInput.value.toUpperCase();
+                if (!selectedTicker) { alert('Por favor, introduce un ticker.'); return; }
+                
+                stage2.classList.remove('hidden');
+                loader2.classList.remove('hidden');
+                selectedTickerSpan.innerText = selectedTicker;
+                expirationSelect.innerHTML = '<option>Cargando...</option>';
+
+                const response = await fetch('/get_expirations', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticker: selectedTicker })
+                });
+                const data = await response.json();
+                
+                loader2.classList.add('hidden');
+                expirationSelect.innerHTML = '';
+                data.expirations.forEach(exp => {
+                    const option = document.createElement('option');
+                    option.value = exp;
+                    option.innerText = exp;
+                    expirationSelect.appendChild(option);
+                });
+            });
+
+            // --- Lógica para el PASO 2 -> PASO 3 ---
+            document.getElementById('analyze-btn').addEventListener('click', async () => {
+                const selectedExpiration = expirationSelect.value;
+                
+                stage3.classList.remove('hidden');
+                stage3.innerHTML = '<div class="loader"></div>';
+
+                const response = await fetch('/get_analysis', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticker: selectedTicker, expiration: selectedExpiration })
+                });
+                const results = await response.json();
+
+                let topWallsHtml = '';
+                for (const [strike, oi] of Object.entries(results.top_walls)) {
+                    topWallsHtml += `<tr><td>Muro de Open Interest</td><td>$${parseFloat(strike).toFixed(2)} (${parseInt(oi)} contratos)</td></tr>`;
+                }
+
+                let tradeIdeasHtml = '';
+                if (results.trade_ideas && results.trade_ideas.length > 0) {
+                    results.trade_ideas.forEach(idea => {
+                        tradeIdeasHtml += `<div class="idea-card ${idea.type}"><h3>${idea.type} - Estrategia: ${idea.strategy}</h3><p><strong>Razón:</strong> ${idea.reason}</p><p><strong>Acción Sugerida:</strong> ${idea.action}</p></div>`;
+                    });
+                } else {
+                    tradeIdeasHtml = '<p>No se generaron señales de alta convicción.</p>';
+                }
+
+                const mmStrategy = results.mm_strategy;
+                let mmStrikesHtml = mmStrategy.strikes_in_focus.length > 0 ? mmStrategy.strikes_in_focus.map(s => `$${s.toFixed(2)}`).join(', ') : 'N/A';
+                
+                const mmSectionHtml = `<div class="mm-section"><h2>Cálculo y Estrategia del Market Maker</h2><p><strong>Precio Actual de Referencia:</strong> $${results.current_price.toFixed(2)}</p><p><strong>Strikes en Foco:</strong> ${mmStrikesHtml}</p><p><strong>Volumen Simulado CALLS (Cierre):</strong> ${mmStrategy.calls_volume_near_close}</p><p><strong>Volumen Simulado PUTS (Cierre):</strong> ${mmStrategy.puts_volume_near_close}</p><hr><p><strong>Predicción del MM:</strong> <span class="mm-prediction ${mmStrategy.prediction}">${mmStrategy.prediction}</span></p><p><strong>Razón:</strong> ${mmStrategy.reason}</p></div>`;
+
+                stage3.innerHTML = `
+                    <h1>Panel de Control para ${results.ticker}</h1>
+                    <h2>(Expiración: ${results.expiration})</h2>
+                    <div class="dashboard">
+                        <div class="metric-box price"><h2>Precio Actual</h2><div id="current-price" class="value">$${results.current_price.toFixed(2)}</div></div>
+                        <div class="metric-box gamma-flip"><h2>Gamma Flip</h2><div class="value">$${results.gamma_flip.toFixed(2)}</div></div>
+                        <div class="metric-box max-pain"><h2>Max Pain</h2><div class="value">$${results.max_pain.toFixed(2)}</div></div>
+                    </div>
+                    <div class="content-container">
+                        ${mmSectionHtml}
+                        <div class="data-section"><h2>Niveles Clave (Estáticos)</h2><table class="results-table">${topWallsHtml}</table></div>
+                        <div class="ideas-section"><h2>Ideas de Trading Generadas</h2>${tradeIdeasHtml}</div>
+                    </div>
+                    <br><a href="/">Realizar otro análisis</a>
+                `;
+                
+                // NO necesitamos 'start_stream' porque el hilo de fondo ya se inició al conectar
+            });
+
+            // --- Lógica para el TIEMPO REAL ---
+            socket.on('update_price', function(data) {
+                const priceDisplay = document.getElementById('current-price');
+                if (priceDisplay) {
+                    priceDisplay.innerText = '$' + data.price.toFixed(2);
+                    priceDisplay.classList.add('price-pulse');
+                    setTimeout(() => priceDisplay.classList.remove('price-pulse'), 500);
+                }
+            });
+        });
+    </script>
+</body>
+</html>
