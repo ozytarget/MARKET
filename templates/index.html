@@ -33,6 +33,7 @@
         .mm-prediction.BAJISTA { color: #cf6679; }
         .mm-prediction.ALCISTA { color: #03dac6; }
         .mm-prediction.NEUTRO { color: #fdd835; }
+        a { color: #bb86fc; }
     </style>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 </head>
@@ -59,7 +60,6 @@
     <div id="stage-3" class="stage hidden"></div>
 
     <script type="text/javascript">
-        // ¡LA CORRECCIÓN CLAVE! Esperamos a que toda la página esté cargada
         document.addEventListener('DOMContentLoaded', function() {
             
             const socket = io();
@@ -75,7 +75,6 @@
             
             let selectedTicker = '';
 
-            // --- Lógica para el PASO 1 -> PASO 2 ---
             document.getElementById('fetch-expirations-btn').addEventListener('click', async () => {
                 selectedTicker = tickerInput.value.toUpperCase();
                 if (!selectedTicker) { alert('Por favor, introduce un ticker.'); return; }
@@ -93,16 +92,22 @@
                 const data = await response.json();
                 
                 loader2.classList.add('hidden');
-                expirationSelect.innerHTML = '';
-                data.expirations.forEach(exp => {
-                    const option = document.createElement('option');
-                    option.value = exp;
-                    option.innerText = exp;
-                    expirationSelect.appendChild(option);
-                });
+                
+                if (data.expirations.length === 0) {
+                    expirationSelect.innerHTML = '<option value="">Sin Opciones Disponibles</option>';
+                    document.getElementById('analyze-btn').innerText = "Analizar Acción (Sin Opciones)";
+                } else {
+                    document.getElementById('analyze-btn').innerText = "Analizar Opciones";
+                    expirationSelect.innerHTML = '';
+                    data.expirations.forEach(exp => {
+                        const option = document.createElement('option');
+                        option.value = exp;
+                        option.innerText = exp;
+                        expirationSelect.appendChild(option);
+                    });
+                }
             });
 
-            // --- Lógica para el PASO 2 -> PASO 3 ---
             document.getElementById('analyze-btn').addEventListener('click', async () => {
                 const selectedExpiration = expirationSelect.value;
                 
@@ -116,45 +121,70 @@
                 });
                 const results = await response.json();
 
-                let topWallsHtml = '';
-                for (const [strike, oi] of Object.entries(results.top_walls)) {
-                    topWallsHtml += `<tr><td>Muro de Open Interest</td><td>$${parseFloat(strike).toFixed(2)} (${parseInt(oi)} contratos)</td></tr>`;
-                }
+                if (results.analysis_type === 'stock_only') {
+                    // --- CONSTRUIMOS EL HTML PARA EL ANÁLISIS DE ACCIÓN ---
+                    let supportHtml = results.support_levels.map(s => `<tr><td>Soporte (Zona de Compra)</td><td>$${s.toFixed(2)}</td></tr>`).join('');
+                    let resistanceHtml = results.resistance_levels.map(r => `<tr><td>Resistencia (Zona de Venta)</td><td>$${r.toFixed(2)}</td></tr>`).join('');
 
-                let tradeIdeasHtml = '';
-                if (results.trade_ideas && results.trade_ideas.length > 0) {
-                    results.trade_ideas.forEach(idea => {
-                        tradeIdeasHtml += `<div class="idea-card ${idea.type}"><h3>${idea.type} - Estrategia: ${idea.strategy}</h3><p><strong>Razón:</strong> ${idea.reason}</p><p><strong>Acción Sugerida:</strong> ${idea.action}</p></div>`;
-                    });
+                    stage3.innerHTML = `
+                        <h1>Análisis de Acción para ${results.ticker}</h1>
+                        <h2>(No se encontró mercado de opciones)</h2>
+                        <div class="dashboard">
+                            <div class="metric-box price"><h2>Precio Actual</h2><div id="current-price" class="value">$${results.current_price.toFixed(2)}</div></div>
+                        </div>
+                        <div class="content-container">
+                            <div class="data-section">
+                                <h2>Niveles Clave de Precio</h2>
+                                <p>Estos son los niveles donde el precio ha reaccionado con fuerza en el último año.</p>
+                                <table class="results-table">
+                                    ${resistanceHtml}
+                                    ${supportHtml}
+                                </table>
+                            </div>
+                        </div>
+                        <br><a href="/">Realizar otro análisis</a>
+                    `;
                 } else {
-                    tradeIdeasHtml = '<p>No se generaron señales de alta convicción.</p>';
+                    // --- CONSTRUIMOS EL HTML PARA EL ANÁLISIS DE OPCIONES ---
+                    let topWallsHtml = '';
+                    for (const [strike, oi] of Object.entries(results.top_walls)) {
+                        topWallsHtml += `<tr><td>Muro de Open Interest</td><td>$${parseFloat(strike).toFixed(2)} (${parseInt(oi)} contratos)</td></tr>`;
+                    }
+
+                    let tradeIdeasHtml = '';
+                    if (results.trade_ideas && results.trade_ideas.length > 0) {
+                        results.trade_ideas.forEach(idea => {
+                            tradeIdeasHtml += `<div class="idea-card ${idea.type}"><h3>${idea.type} - Estrategia: ${idea.strategy}</h3><p><strong>Razón:</strong> ${idea.reason}</p><p><strong>Acción Sugerida:</strong> ${idea.action}</p></div>`;
+                        });
+                    } else {
+                        tradeIdeasHtml = '<p>No se generaron señales de alta convicción.</p>';
+                    }
+
+                    const mmStrategy = results.mm_strategy;
+                    let mmStrikesHtml = mmStrategy.strikes_in_focus.length > 0 ? mmStrategy.strikes_in_focus.map(s => `$${s.toFixed(2)}`).join(', ') : 'N/A';
+                    
+                    const mmSectionHtml = `<div class="mm-section"><h2>Cálculo y Estrategia del Market Maker</h2><p><strong>Precio Actual de Referencia:</strong> $${results.current_price.toFixed(2)}</p><p><strong>Strikes en Foco:</strong> ${mmStrikesHtml}</p><p><strong>Volumen Simulado CALLS (Cierre):</strong> ${mmStrategy.calls_volume_near_close}</p><p><strong>Volumen Simulado PUTS (Cierre):</strong> ${mmStrategy.puts_volume_near_close}</p><hr><p><strong>Predicción del MM:</strong> <span class="mm-prediction ${mmStrategy.prediction}">${mmStrategy.prediction}</span></p><p><strong>Razón:</strong> ${mmStrategy.reason}</p></div>`;
+
+                    stage3.innerHTML = `
+                        <h1>Panel de Control para ${results.ticker}</h1>
+                        <h2>(Expiración: ${results.expiration})</h2>
+                        <div class="dashboard">
+                            <div class="metric-box price"><h2>Precio Actual</h2><div id="current-price" class="value">$${results.current_price.toFixed(2)}</div></div>
+                            <div class="metric-box gamma-flip"><h2>Gamma Flip</h2><div class="value">$${results.gamma_flip.toFixed(2)}</div></div>
+                            <div class="metric-box max-pain"><h2>Max Pain</h2><div class="value">$${results.max_pain.toFixed(2)}</div></div>
+                        </div>
+                        <div class="content-container">
+                            ${mmSectionHtml}
+                            <div class="data-section"><h2>Niveles Clave (Estáticos)</h2><table class="results-table">${topWallsHtml}</table></div>
+                            <div class="ideas-section"><h2>Ideas de Trading Generadas</h2>${tradeIdeasHtml}</div>
+                        </div>
+                        <br><a href="/">Realizar otro análisis</a>
+                    `;
                 }
-
-                const mmStrategy = results.mm_strategy;
-                let mmStrikesHtml = mmStrategy.strikes_in_focus.length > 0 ? mmStrategy.strikes_in_focus.map(s => `$${s.toFixed(2)}`).join(', ') : 'N/A';
                 
-                const mmSectionHtml = `<div class="mm-section"><h2>Cálculo y Estrategia del Market Maker</h2><p><strong>Precio Actual de Referencia:</strong> $${results.current_price.toFixed(2)}</p><p><strong>Strikes en Foco:</strong> ${mmStrikesHtml}</p><p><strong>Volumen Simulado CALLS (Cierre):</strong> ${mmStrategy.calls_volume_near_close}</p><p><strong>Volumen Simulado PUTS (Cierre):</strong> ${mmStrategy.puts_volume_near_close}</p><hr><p><strong>Predicción del MM:</strong> <span class="mm-prediction ${mmStrategy.prediction}">${mmStrategy.prediction}</span></p><p><strong>Razón:</strong> ${mmStrategy.reason}</p></div>`;
-
-                stage3.innerHTML = `
-                    <h1>Panel de Control para ${results.ticker}</h1>
-                    <h2>(Expiración: ${results.expiration})</h2>
-                    <div class="dashboard">
-                        <div class="metric-box price"><h2>Precio Actual</h2><div id="current-price" class="value">$${results.current_price.toFixed(2)}</div></div>
-                        <div class="metric-box gamma-flip"><h2>Gamma Flip</h2><div class="value">$${results.gamma_flip.toFixed(2)}</div></div>
-                        <div class="metric-box max-pain"><h2>Max Pain</h2><div class="value">$${results.max_pain.toFixed(2)}</div></div>
-                    </div>
-                    <div class="content-container">
-                        ${mmSectionHtml}
-                        <div class="data-section"><h2>Niveles Clave (Estáticos)</h2><table class="results-table">${topWallsHtml}</table></div>
-                        <div class="ideas-section"><h2>Ideas de Trading Generadas</h2>${tradeIdeasHtml}</div>
-                    </div>
-                    <br><a href="/">Realizar otro análisis</a>
-                `;
-                
-                // NO necesitamos 'start_stream' porque el hilo de fondo ya se inició al conectar
+                socket.emit('start_stream', { 'ticker': selectedTicker });
             });
 
-            // --- Lógica para el TIEMPO REAL ---
             socket.on('update_price', function(data) {
                 const priceDisplay = document.getElementById('current-price');
                 if (priceDisplay) {

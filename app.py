@@ -1,5 +1,5 @@
 from flask import Flask, render_template, request, jsonify
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO
 import pandas as pd
 import yfinance as yf
 import requests
@@ -14,7 +14,7 @@ app = Flask(__name__)
 socketio = SocketIO(app)
 thread = None
 thread_lock = threading.Lock()
-stream_ticker = None # Esta variable nos dice qué ticker transmitir
+stream_ticker = None
 
 # --- FUNCIONES DE ANÁLISIS ---
 
@@ -37,7 +37,7 @@ def get_finviz_tickers():
 def generate_trade_ideas(current_price, max_pain, top_walls_strikes):
     """Genera ideas de trading basadas en niveles clave."""
     ideas = []
-    if not max_pain or not current_price: return ideas
+    if not all([max_pain, current_price, top_walls_strikes]): return ideas
     price_diff_percent = abs(current_price - max_pain) / current_price * 100
     if price_diff_percent > 2.0:
         if current_price > max_pain:
@@ -52,7 +52,7 @@ def generate_trade_ideas(current_price, max_pain, top_walls_strikes):
     return ideas
 
 def analyze_market_maker_strategy(current_price, calls_df, puts_df, top_oi_strikes):
-    """Simula un análisis de la estrategia del MM basado en el volumen."""
+    """Simula un análisis de la estrategia del MM."""
     mm_analysis = {"prediction": "Indeterminado", "reason": "Datos insuficientes.", "strikes_in_focus": [], "calls_volume_near_close": 0, "puts_volume_near_close": 0}
     strikes_to_check = set(); strikes_to_check.add(round(current_price))
     for s in top_oi_strikes: strikes_to_check.add(round(s))
@@ -60,53 +60,57 @@ def analyze_market_maker_strategy(current_price, calls_df, puts_df, top_oi_strik
     mm_analysis["strikes_in_focus"] = relevant_strikes
     total_calls_vol_simulated = 0; total_puts_vol_simulated = 0
     for strike in relevant_strikes:
-        if strike in calls_df['strike'].values:
-            total_calls_vol_simulated += calls_df[calls_df['strike'] == strike]['openInterest'].iloc[0] * random.uniform(0.1, 0.5)
-        if strike in puts_df['strike'].values:
-            total_puts_vol_simulated += puts_df[puts_df['strike'] == strike]['openInterest'].iloc[0] * random.uniform(0.1, 0.5)
-    mm_analysis["calls_volume_near_close"] = int(total_calls_vol_simulated)
-    mm_analysis["puts_volume_near_close"] = int(total_puts_vol_simulated)
+        if strike in calls_df['strike'].values: total_calls_vol_simulated += calls_df[calls_df['strike'] == strike]['openInterest'].iloc[0] * random.uniform(0.1, 0.5)
+        if strike in puts_df['strike'].values: total_puts_vol_simulated += puts_df[puts_df['strike'] == strike]['openInterest'].iloc[0] * random.uniform(0.1, 0.5)
+    mm_analysis["calls_volume_near_close"] = int(total_calls_vol_simulated); mm_analysis["puts_volume_near_close"] = int(total_puts_vol_simulated)
     if total_calls_vol_simulated > total_puts_vol_simulated * 1.2:
-        mm_analysis["prediction"] = "BAJISTA"
-        mm_analysis["reason"] = f"Se observó un volumen significativamente mayor de CALLS (aprox. {mm_analysis['calls_volume_near_close']}) que de PUTS (aprox. {mm_analysis['puts_volume_near_close']}). El MM podría buscar bajar el precio."
+        mm_analysis["prediction"] = "BAJISTA"; mm_analysis["reason"] = f"Se observó un volumen significativamente mayor de CALLS (aprox. {mm_analysis['calls_volume_near_close']}) que de PUTS (aprox. {mm_analysis['puts_volume_near_close']}). El MM podría buscar bajar el precio."
     elif total_puts_vol_simulated > total_calls_vol_simulated * 1.2:
-        mm_analysis["prediction"] = "ALCISTA"
-        mm_analysis["reason"] = f"Se observó un volumen significativamente mayor de PUTS (aprox. {mm_analysis['puts_volume_near_close']}) que de CALLS (aprox. {mm_analysis['calls_volume_near_close']}). El MM podría buscar subir el precio."
+        mm_analysis["prediction"] = "ALCISTA"; mm_analysis["reason"] = f"Se observó un volumen significativamente mayor de PUTS (aprox. {mm_analysis['puts_volume_near_close']}) que de CALLS (aprox. {mm_analysis['calls_volume_near_close']}). El MM podría buscar subir el precio."
     else:
-        mm_analysis["prediction"] = "NEUTRO"
-        mm_analysis["reason"] = "Volúmenes de CALLS y PUTS relativamente equilibrados."
+        mm_analysis["prediction"] = "NEUTRO"; mm_analysis["reason"] = "Volúmenes de CALLS y PUTS relativamente equilibrados."
     return mm_analysis
+    
+def analyze_stock_price_action(ticker_symbol):
+    """Se ejecuta cuando no hay opciones para analizar Soportes y Resistencias."""
+    print(f"No se encontraron opciones para {ticker_symbol}. Cambiando a Análisis de Acción.")
+    stock = yf.Ticker(ticker_symbol)
+    hist = stock.history(period="1y")
+    if hist.empty: return {"error": "No se pudieron obtener datos históricos."}
+    current_price = hist['Close'].iloc[-1]
+    recent_data = hist.tail(180)
+    support_levels = recent_data['Low'].nsmallest(3).tolist()
+    resistance_levels = recent_data['High'].nlargest(3).tolist()
+    return {
+        "analysis_type": "stock_only", "ticker": ticker_symbol, "current_price": current_price,
+        "support_levels": sorted(support_levels), "resistance_levels": sorted(resistance_levels)
+    }
 
 def analyze_options_static(ticker_symbol, expiration_date):
-    """Realiza el análisis estático completo UNA VEZ para cargar la página."""
+    """Realiza el análisis de opciones completo."""
     stock = yf.Ticker(ticker_symbol)
     current_price = stock.history(period="1d")['Close'].iloc[-1]
     opt = stock.option_chain(expiration_date)
-    calls = opt.calls
-    puts = opt.puts
+    if opt.calls.empty and opt.puts.empty: raise ValueError(f"La cadena de opciones para {ticker_symbol} en {expiration_date} está vacía.")
+    calls = opt.calls; puts = opt.puts
     total_oi = calls.set_index('strike')['openInterest'].add(puts.set_index('strike')['openInterest'], fill_value=0)
-    top_oi_walls = total_oi.sort_values(ascending=False).head(5)
-    max_pain_strike = 0
-    min_loss = float('inf')
+    top_oi_walls = total_oi.sort_values(ascending=False).head(5); max_pain_strike = 0; min_loss = float('inf')
     if not total_oi.index.empty:
         for strike_price in total_oi.index:
             total_call_value = ((strike_price - calls['strike']).clip(lower=0) * calls['openInterest']).sum()
             total_put_value = ((puts['strike'] - strike_price).clip(lower=0) * puts['openInterest']).sum()
             total_options_value = total_call_value + total_put_value
-            if total_options_value < min_loss:
-                min_loss = total_options_value
-                max_pain_strike = strike_price
+            if total_options_value < min_loss: min_loss = total_options_value; max_pain_strike = strike_price
     trade_ideas = generate_trade_ideas(current_price, max_pain_strike, top_oi_walls.index.tolist())
     mm_strategy = analyze_market_maker_strategy(current_price, calls, puts, top_oi_walls.index.tolist())
     return {
-        "ticker": ticker_symbol, "expiration": expiration_date, "current_price": current_price,
+        "analysis_type": "options", "ticker": ticker_symbol, "expiration": expiration_date, "current_price": current_price,
         "max_pain": max_pain_strike, "top_walls": top_oi_walls.to_dict(), "trade_ideas": trade_ideas,
         "gamma_flip": round(current_price * 0.98, 2), "mm_strategy": mm_strategy
     }
 
-# --- LÓGICA DE TIEMPO REAL CORREGIDA ---
 def background_price_stream():
-    """Esta es la 'estación de radio' que transmite el precio del ticker activo."""
+    """Transmite el precio del ticker activo."""
     print("Hilo de fondo iniciado. Esperando un ticker para transmitir...")
     while True:
         if stream_ticker:
@@ -121,30 +125,35 @@ def background_price_stream():
 # --- RUTAS DE LA APLICACIÓN (API) ---
 @app.route('/')
 def index():
-    tickers = get_finviz_tickers()
-    return render_template('index.html', tickers=tickers)
+    tickers = get_finviz_tickers(); return render_template('index.html', tickers=tickers)
 
 @app.route('/get_expirations', methods=['POST'])
 def get_expirations():
     ticker = request.json['ticker']
-    expirations = yf.Ticker(ticker).options
-    return jsonify({'expirations': list(expirations)})
+    try:
+        expirations = yf.Ticker(ticker).options
+        return jsonify({'expirations': list(expirations)})
+    except Exception as e:
+        print(f"Error obteniendo expiraciones para {ticker}: {e}")
+        return jsonify({'expirations': []})
 
 @app.route('/get_analysis', methods=['POST'])
 def get_analysis():
-    """Actualiza la 'nota' para decirle al hilo de fondo qué ticker transmitir."""
+    """Decide qué análisis realizar."""
     global stream_ticker
-    ticker = request.json['ticker']
-    expiration = request.json['expiration']
+    ticker = request.json['ticker']; expiration = request.json.get('expiration')
     print(f"Actualizando el ticker del stream a: {ticker}")
-    stream_ticker = ticker # Actualizamos la variable global
-    analysis_results = analyze_options_static(ticker, expiration)
+    stream_ticker = ticker
+    try:
+        if not expiration or expiration == "": raise ValueError("No se seleccionó expiración.")
+        analysis_results = analyze_options_static(ticker, expiration)
+    except (ValueError, IndexError) as e:
+        print(f"Fallo en el análisis de opciones ({e}). Ejecutando análisis de acción.")
+        analysis_results = analyze_stock_price_action(ticker)
     return jsonify(analysis_results)
 
-# --- INICIADOR DEL HILO DE FONDO ---
 @socketio.on('connect')
 def handle_connect():
-    """Inicia el hilo de fondo UNA SOLA VEZ."""
     global thread
     print("Cliente conectado. Verificando hilo de fondo...")
     with thread_lock:
